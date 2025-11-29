@@ -1,0 +1,373 @@
+artifact_app/
+ ├── pubspec.yaml
+ ├── android/
+ ├── ios/
+ ├── web/
+ ├── lib/
+ │    ├── main.dart
+ │    ├── pages/
+ │    │     ├── feed_page.dart
+ │    │     ├── capture_page.dart
+ │    │     ├── detail_page.dart
+ │    ├── models/
+ │    │     └── artifact.dart
+ │    ├── services/
+ │    │     └── artifact_store.dart
+ └── assets/
+       └── placeholder.usdz
+name: artifact_app
+description: Archaeology artifact scanner with 3D viewer
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  camera: ^0.10.5+5
+  path_provider: ^2.1.2
+  model_viewer_plus: ^2.0.0
+  shared_preferences: ^2.2.2
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/placeholder.usdz
+import 'dart:convert';
+
+class Artifact {
+  String id;
+  String name;
+  String imagePath;
+  String modelPath;
+  String notes;
+  double width;
+  double height;
+  double length;
+  double weight;
+
+  Artifact({
+    required this.id,
+    required this.name,
+    required this.imagePath,
+    required this.modelPath,
+    required this.notes,
+    required this.width,
+    required this.height,
+    required this.length,
+    required this.weight,
+  });
+
+  Map<String, dynamic> toJson() => {
+        "id": id,
+        "name": name,
+        "imagePath": imagePath,
+        "modelPath": modelPath,
+        "notes": notes,
+        "width": width,
+        "height": height,
+        "length": length,
+        "weight": weight,
+      };
+
+  static Artifact fromJson(Map<String, dynamic> json) => Artifact(
+        id: json["id"],
+        name: json["name"],
+        imagePath: json["imagePath"],
+        modelPath: json["modelPath"],
+        notes: json["notes"],
+        width: json["width"],
+        height: json["height"],
+        length: json["length"],
+        weight: json["weight"],
+      );
+}
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/artifact.dart';
+
+class ArtifactStore {
+  static const String key = "artifacts";
+
+  Future<List<Artifact>> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    String? data = prefs.getString(key);
+    if (data == null) return [];
+
+    List list = jsonDecode(data);
+    return list.map((e) => Artifact.fromJson(e)).toList();
+  }
+
+  Future<void> save(List<Artifact> artifacts) async {
+    final prefs = await SharedPreferences.getInstance();
+    String data = jsonEncode(artifacts.map((e) => e.toJson()).toList());
+    prefs.setString(key, data);
+  }
+}
+import 'package:flutter/material.dart';
+import 'pages/feed_page.dart';
+
+void main() {
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: "Artifact Scanner",
+      theme: ThemeData(primarySwatch: Colors.brown),
+      home: FeedPage(),
+    );
+  }
+}
+import 'package:flutter/material.dart';
+import '../services/artifact_store.dart';
+import '../models/artifact.dart';
+import 'capture_page.dart';
+import 'detail_page.dart';
+
+class FeedPage extends StatefulWidget {
+  @override
+  State<FeedPage> createState() => _FeedPageState();
+}
+
+class _FeedPageState extends State<FeedPage> {
+  final store = ArtifactStore();
+  List<Artifact> artifacts = [];
+  String search = "";
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    artifacts = await store.load();
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    List<Artifact> filtered = artifacts
+        .where((a) => a.name.toLowerCase().contains(search.toLowerCase()))
+        .toList();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text("Digital Artifact Twins"),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.all(8),
+            child: TextField(
+              onChanged: (v) => setState(() => search = v),
+              decoration: InputDecoration(
+                hintText: "Search artifacts...",
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: filtered.length,
+              itemBuilder: (_, i) {
+                final a = filtered[i];
+                return ListTile(
+                  leading: Image.file(
+                    File(a.imagePath),
+                    width: 60,
+                    height: 60,
+                    fit: BoxFit.cover,
+                  ),
+                  title: Text(a.name),
+                  onTap: () =>
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => DetailPage(a))),
+                );
+              },
+            ),
+          )
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        child: Icon(Icons.camera_alt),
+        onPressed: () async {
+          await Navigator.push(context, MaterialPageRoute(builder: (_) => CapturePage()));
+          load();
+        },
+      ),
+    );
+  }
+}
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:camera/camera.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
+
+import '../models/artifact.dart';
+import '../services/artifact_store.dart';
+
+class CapturePage extends StatefulWidget {
+  @override
+  State<CapturePage> createState() => _CapturePageState();
+}
+
+class _CapturePageState extends State<CapturePage> {
+  CameraController? controller;
+  XFile? captured;
+  final store = ArtifactStore();
+
+  final name = TextEditingController();
+  final notes = TextEditingController();
+  final width = TextEditingController();
+  final height = TextEditingController();
+  final length = TextEditingController();
+  final weight = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    setupCamera();
+  }
+
+  Future<void> setupCamera() async {
+    final cams = await availableCameras();
+    controller = CameraController(cams.first, ResolutionPreset.high);
+    await controller!.initialize();
+    setState(() {});
+  }
+
+  Future<void> save() async {
+    if (captured == null) return;
+
+    final dir = await getApplicationDocumentsDirectory();
+    final id = const Uuid().v4();
+
+    final imgPath = "${dir.path}/$id.jpg";
+    await captured!.saveTo(imgPath);
+
+    final modelPath = "${dir.path}/$id.usdz";
+    File(modelPath).writeAsBytesSync([]); // placeholder
+
+    final a = Artifact(
+      id: id,
+      name: name.text,
+      imagePath: imgPath,
+      modelPath: modelPath,
+      notes: notes.text,
+      width: double.tryParse(width.text) ?? 0,
+      height: double.tryParse(height.text) ?? 0,
+      length: double.tryParse(length.text) ?? 0,
+      weight: double.tryParse(weight.text) ?? 0,
+    );
+
+    List<Artifact> list = await store.load();
+    list.add(a);
+    await store.save(list);
+
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text("Capture Artifact")),
+      body: controller == null
+          ? Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+              padding: EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  if (captured == null)
+                    AspectRatio(
+                      aspectRatio: controller!.value.aspectRatio,
+                      child: CameraPreview(controller!),
+                    )
+                  else
+                    Image.file(File(captured!.path)),
+
+                  ElevatedButton(
+                    child: Text(captured == null ? "Take Photo" : "Retake"),
+                    onPressed: () async {
+                      captured = await controller!.takePicture();
+                      setState(() {});
+                    },
+                  ),
+
+                  TextField(controller: name, decoration: InputDecoration(labelText: "Name")),
+                  TextField(controller: width, decoration: InputDecoration(labelText: "Width")),
+                  TextField(controller: height, decoration: InputDecoration(labelText: "Height")),
+                  TextField(controller: length, decoration: InputDecoration(labelText: "Length")),
+                  TextField(controller: weight, decoration: InputDecoration(labelText: "Weight")),
+                  TextField(controller: notes, decoration: InputDecoration(labelText: "Notes")),
+
+                  SizedBox(height: 12),
+                  ElevatedButton(
+                    onPressed: save,
+                    child: Text("Save Artifact"),
+                  )
+                ],
+              ),
+            ),
+    );
+  }
+}
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:model_viewer_plus/model_viewer_plus.dart';
+import '../models/artifact.dart';
+
+class DetailPage extends StatelessWidget {
+  final Artifact artifact;
+
+  DetailPage(this.artifact);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(artifact.name)),
+      body: SingleChildScrollView(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Image.file(File(artifact.imagePath), height: 240),
+
+            SizedBox(height: 20),
+            ModelViewer(
+              src: artifact.modelPath,
+              alt: "3D Model",
+              ar: true,
+              autoRotate: true,
+              cameraControls: true,
+              backgroundColor: Colors.white,
+              height: "300px",
+            ),
+
+            SizedBox(height: 20),
+            info("Width", artifact.width.toString()),
+            info("Height", artifact.height.toString()),
+            info("Length", artifact.length.toString()),
+            info("Weight", artifact.weight.toString()),
+            info("Notes", artifact.notes),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget info(String label, String value) {
+    return Container(
+      margin: EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Text("$label: ", style: TextStyle(fontWeight: FontWeight.bold)),
+          Expanded(child: Text(value)),
+        ],
+      ),
+    );
+  }
+}
